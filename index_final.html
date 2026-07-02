@@ -462,26 +462,50 @@ input { font-family: inherit; }
   color: var(--ink-light);
 }
 
-/* next button */
+/* next button — fixed to bottom, always thumb-reachable */
 .next-wrap {
-  padding: 12px 20px 0;
-  animation: cardIn 0.2s ease;
+  position: fixed;
+  bottom: 0;
+  left: 0; right: 0;
+  padding: 12px 20px calc(var(--safe-b) + 12px);
+  background: linear-gradient(to bottom, transparent 0%, var(--bg) 30%);
+  animation: cardIn 0.25s ease;
+  z-index: 10;
 }
 .next-btn {
   width: 100%;
   border-radius: var(--r);
-  padding: 15px;
-  font-size: 15px;
+  padding: 16px;
+  font-size: 16px;
   font-weight: 800;
   color: var(--ink);
   text-align: center;
   transition: transform 0.12s;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.35);
 }
 .next-btn.math  { background: var(--math); }
 .next-btn.geo   { background: var(--geo); }
 .next-btn.logic { background: var(--logic); }
 .next-btn.mixed { background: var(--geo); }
 .next-btn:active { transform: scale(0.97); }
+/* spacer so content doesn't hide under fixed button */
+.next-spacer { height: 88px; }
+/* nudge message on wrong answer */
+.nudge-wrap {
+  padding: 0 20px;
+  margin-top: 10px;
+  animation: cardIn 0.2s ease;
+}
+.nudge-box {
+  background: #2A2050;
+  border-left: 3px solid #7B6FCC;
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 11px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #B0A8E0;
+  font-style: italic;
+}
 
 /* ══════════════════════════════════════════════════════════
    RESULT
@@ -730,6 +754,14 @@ input { font-family: inherit; }
 #screen-nodata code {
   background: var(--bg2); padding: 2px 7px;
   border-radius: 5px; font-size: 13px; color: var(--geo);
+}
+
+@keyframes shake {
+  0%,100% { transform: translateX(0); }
+  20%      { transform: translateX(-6px); }
+  40%      { transform: translateX(6px); }
+  60%      { transform: translateX(-4px); }
+  80%      { transform: translateX(4px); }
 }
 
 /* ── reduced motion ───────────────────────────────────── */
@@ -1108,56 +1140,104 @@ function renderQuestion() {
   });
 
   // clear extra areas
-  document.getElementById('expl-area').innerHTML  = '';
-  document.getElementById('next-area').innerHTML  = '';
-  sess.answered = false;
+  document.getElementById('expl-area').innerHTML = '';
+  document.getElementById('next-area').innerHTML = '';
+  // remove any floating next-wrap from previous question
+  if (sess._nextWrap && sess._nextWrap.parentNode) {
+    sess._nextWrap.parentNode.removeChild(sess._nextWrap);
+    sess._nextWrap = null;
+  }
+  sess.answered  = false;
+  sess._wrongCount = 0;
 }
 
-function answer(chosen) {
-  if (currentSession.answered) return;
-  currentSession.answered = true;
+const NUDGES = [
+  'Подумай ещё раз 🤔',
+  'Попробуй ещё раз!',
+  'Не торопись, подумай...',
+  'Почти! Попробуй снова.',
+  'Ещё одна попытка!',
+  'Подумай внимательнее 💭',
+  'Не сдавайся, попробуй!',
+  'Почти угадал — попробуй ещё.',
+];
 
-  const sess = currentSession;
-  const q    = sess.questions[sess.current];
+function answer(chosen) {
+  // prevent double-tap
+  if (currentSession._lockedChoice !== undefined) return;
+
+  const sess    = currentSession;
+  const q       = sess.questions[sess.current];
   const correct = q.answer_index;
   const isRight = chosen === correct;
 
-  // update breakdown
+  const optBtns = document.querySelectorAll('.opt-btn');
+
+  if (!isRight) {
+    // ── WRONG: nudge only, keep other options active ──────────────────
+    // mark the tapped button as wrong temporarily
+    optBtns[chosen].classList.add('wrong');
+    // lock this specific button so they can't tap it again
+    optBtns[chosen].disabled = true;
+
+    // show a nudge phrase (rotate through them)
+    sess._wrongCount = (sess._wrongCount || 0) + 1;
+    const nudge = NUDGES[(sess._wrongCount - 1) % NUDGES.length];
+    document.getElementById('expl-area').innerHTML =
+      `<div class="nudge-wrap"><div class="nudge-box">${nudge}</div></div>`;
+
+    // brief shake animation on the wrong button
+    optBtns[chosen].style.animation = 'none';
+    optBtns[chosen].offsetHeight;
+    optBtns[chosen].style.animation = 'shake 0.35s ease';
+
+    return; // don't proceed — wait for correct answer
+  }
+
+  // ── CORRECT ───────────────────────────────────────────────────────────
+  sess.answered = true;
+
+  // disable all options, mark correct
+  optBtns.forEach((btn, i) => {
+    btn.disabled = true;
+    if (i === correct) btn.classList.add('correct');
+  });
+
+  // score: only count on first attempt (no wrong attempts on this question)
+  const firstTry = !sess._wrongCount || sess._wrongCount === 0;
   const bd = sess.breakdown[q.category];
   bd[1]++;
-  if (isRight) { bd[0]++; sess.score++; }
+  if (firstTry) { bd[0]++; sess.score++; }
+  sess._wrongCount = 0; // reset for next question
 
-  // update totals
+  // cumulative player stats (counted once per question regardless of attempts)
   currentPlayer.totalQ++;
-  if (isRight) currentPlayer.totalCorrect++;
+  if (firstTry) currentPlayer.totalCorrect++;
   if (!currentPlayer.seen) currentPlayer.seen = [];
   if (!currentPlayer.seen.includes(q.id)) currentPlayer.seen.push(q.id);
   savePlayer(currentPlayer);
   saveSession(currentPlayer.name, sess);
 
-  // colour options
-  document.querySelectorAll('.opt-btn').forEach((btn, i) => {
-    btn.disabled = true;
-    if (i === correct) btn.classList.add('correct');
-    else if (i === chosen && !isRight) btn.classList.add('wrong');
-  });
-
   document.getElementById('score-display').textContent = sess.score;
 
-  // explanation
+  // show explanation (only after correct answer)
   document.getElementById('expl-area').innerHTML =
     `<div class="expl-wrap"><div class="expl-box">${q.explanation_ru}</div></div>`;
 
-  // next button
+  // fixed-bottom next button + spacer so content doesn't hide under it
+  const nextArea = document.getElementById('next-area');
+  nextArea.innerHTML = '<div class="next-spacer"></div>';
+  const wrap = document.createElement('div');
+  wrap.className = 'next-wrap';
   const isLast = sess.current === sess.questions.length - 1;
-  const nextWrap = document.getElementById('next-area');
-  const nextBtn  = document.createElement('button');
-  nextBtn.className = `next-btn ${q.category}`;
-  nextBtn.textContent = isLast ? 'Результаты →' : 'Дальше →';
-  nextWrap.innerHTML = '';
-  nextWrap.className = 'next-wrap';
-  nextWrap.appendChild(nextBtn);
-  nextBtn.addEventListener('click', nextQuestion);
+  const btn = document.createElement('button');
+  btn.className = `next-btn ${q.category}`;
+  btn.textContent = isLast ? 'Результаты →' : 'Дальше →';
+  btn.addEventListener('click', nextQuestion);
+  wrap.appendChild(btn);
+  document.body.appendChild(wrap);
+  // clean up the floating wrap when question changes
+  sess._nextWrap = wrap;
 }
 
 function nextQuestion() {
@@ -1172,7 +1252,13 @@ function nextQuestion() {
 }
 
 document.getElementById('quit-btn').addEventListener('click', () => {
-  if (confirm('Выйти? Прогресс сохранится.')) goHome();
+  if (confirm('Выйти? Прогресс сохранится.')) {
+    // clean up floating button if present
+    if (currentSession && currentSession._nextWrap && currentSession._nextWrap.parentNode) {
+      currentSession._nextWrap.parentNode.removeChild(currentSession._nextWrap);
+    }
+    goHome();
+  }
 });
 
 // ══════════════════════════════════════════════════════════
